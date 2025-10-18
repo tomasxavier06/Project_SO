@@ -27,7 +27,7 @@ NC='\033[0m' # No Color
 #################################################
 initialize_recyclebin() {
 
-    mkdir -p "$FILES_DIR" || { echo -e "${RED}Erro ao criar diretorios.${NC}"; return 1; }
+    mkdir -p "$FILES_DIR" || { echo -e "${RED}Error in creating directorys.${NC}"; return 1; }
 
     if [ ! -f "$METADATA_FILE" ]; then
         echo "ID,ORIGINAL_NAME,ORIGINAL_PATH,DELETION_DATE,FILE_SIZE,FILE_TYPE,PERMISSIONS,OWNER" > "$METADATA_FILE"
@@ -41,7 +41,7 @@ initialize_recyclebin() {
         touch "$LOG_FILE"
     fi
 
-    echo -e "${GREEN}Recycle bin inicializado em $RECYCLE_BIN_DIR${NC}"
+    echo -e "${GREEN}Recycle bin initialized at $RECYCLE_BIN_DIR${NC}"
     return 0
 }
 
@@ -223,7 +223,7 @@ echo -e "${GREEN}Total size:${NC} $total_hr"
 
 return 0
 }
-: <<'EOF'
+
 #################################################
 # Function: restore_file
 # Description: Restores file from recycle bin
@@ -232,19 +232,88 @@ return 0
 #################################################
 restore_file() {
 # TODO: Implement this function
-local file_id="$1"
-if [ -z "$file_id" ]; then
-echo -e "${RED}Error: No file ID specified${NC}"
-return 1
-fi
-# Your code here
-# Hint: Search metadata for matching ID
-# Hint: Get original path from metadata
-# Hint: Check if original path exists
-# Hint: Move file back and restore permissions
-# Hint: Remove entry from metadata
-return 0
+    local file_id="$1"
+    if [ -z "$file_id" ]; then
+        echo -e "${RED}Error: No file ID or name specified${NC}"
+        return 1
+    fi
+
+    # Procurar por ID ou nome literal no metadata
+    local metadata_line
+    metadata_line=$(grep -F "$file_id" "$METADATA_FILE" | head -n 1)
+
+    if [ -z "$metadata_line" ]; then
+        echo -e "${RED}Error: File ID or name not found in metadata${NC}"
+        return 1
+    fi
+
+    # Extrair campos da metadata
+    IFS=',' read -r id name orig_path date size type perms owner <<< "$metadata_line"
+
+    # Caminho real no recycle bin
+    local bin_file="$FILES_DIR/$id"
+
+    # Verificar se o arquivo existe no recycle bin
+    if [ ! -e "$bin_file" ]; then
+        echo -e "${RED}Error: File '$bin_file' not found in recycle bin${NC}"
+        return 1
+    fi
+
+    # Determinar diretório de destino e criar se necessário
+    local dest_dir
+    dest_dir=$(dirname "$orig_path")
+    if [ ! -d "$dest_dir" ]; then
+        mkdir -p "$dest_dir" || {
+            echo -e "${RED}Error: Cannot create directory $dest_dir${NC}"
+            return 1
+        }
+    fi
+
+    local dest_path="$orig_path"
+
+    # Tratar conflito se arquivo já existir no destino
+    if [ -e "$dest_path" ]; then
+        echo -e "${YELLOW}File $dest_path already exists.${NC}"
+        echo "Choose action: [O]verwrite / [R]ename / [C]ancel"
+        read -r choice
+        case "$choice" in
+            [Oo]* )
+                ;;
+            [Rr]* )
+                timestamp=$(date +%Y%m%d%H%M%S)
+                dest_path="${dest_dir}/${name}_${timestamp}"
+                ;;
+            [Cc]* )
+                echo "Restoration canceled."
+                return 1
+                ;;
+            * )
+                echo "Invalid option. Canceling."
+                return 1
+                ;;
+        esac
+    fi
+
+    # Mover arquivo do recycle bin para o destino
+    if ! mv "$bin_file" "$dest_path"; then
+        echo -e "${RED}Error: Failed to restore file. Check permissions and disk space.${NC}"
+        return 1
+    fi
+
+    # Restaurar permissões originais
+    chmod "$perms" "$dest_path" 2>/dev/null || echo -e "${YELLOW}Warning: Could not restore permissions.${NC}"
+
+    # Remover entrada do metadata
+    grep -v "^$id," "$METADATA_FILE" > "${METADATA_FILE}.tmp" && mv "${METADATA_FILE}.tmp" "$METADATA_FILE"
+
+    # Feedback e log
+    echo -e "${GREEN}File restored to $dest_path successfully.${NC}"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') RESTORE $id -> $dest_path" >> "$LOG_FILE"
+
+    return 0
 }
+
+
 #################################################
 # Function: empty_recyclebin
 # Description: Permanently deletes all items
@@ -253,12 +322,62 @@ return 0
 #################################################
 empty_recyclebin() {
 # TODO: Implement this function
-# Your code here
-# Hint: Ask for confirmation
-# Hint: Delete all files in FILES_DIR
-# Hint: Reset metadata file
-return 0
+    local target="$1"
+    local force="$2"
+    local deleted_count=0
+    local deleted_size=0
+
+    # Função interna para apagar uma linha de metadata e arquivo
+    _delete_item() {
+        local id="$1"
+        local metadata_line
+        metadata_line=$(grep -F "$id" "$METADATA_FILE" | head -n 1)
+        if [ -z "$metadata_line" ]; then
+            echo -e "${YELLOW}Warning: File ID $id not found in metadata.${NC}"
+            return
+        fi
+        IFS=',' read -r id name path date size type perms owner <<< "$metadata_line"
+        local file_path="$FILES_DIR/$id"
+        if [ -e "$file_path" ]; then
+            rm -rf "$file_path" && ((deleted_count++)) && ((deleted_size+=size))
+            echo "$(date '+%Y-%m-%d %H:%M:%S') PERMANENT DELETE $id -> $file_path" >> "$LOG_FILE"
+        fi
+        # Remove do metadata
+        grep -v "^$id," "$METADATA_FILE" > "${METADATA_FILE}.tmp" && mv "${METADATA_FILE}.tmp" "$METADATA_FILE"
+    }
+
+    if [ "$target" == "--force" ]; then
+        force="true"
+        target=""
+    fi
+
+    if [ -n "$target" ] && [ "$force" != "true" ]; then
+        echo -n "Are you sure you want to permanently delete item $target? [y/N]: "
+        read -r confirm
+        [[ ! "$confirm" =~ ^[Yy]$ ]] && echo "Operation canceled." && return 1
+    elif [ -z "$target" ] && [ "$force" != "true" ]; then
+        echo -n "Are you sure you want to permanently delete ALL items in recycle bin? [y/N]: "
+        read -r confirm
+        [[ ! "$confirm" =~ ^[Yy]$ ]] && echo "Operation canceled." && return 1
+    fi
+
+    # Delete specific item
+    if [ -n "$target" ]; then
+        _delete_item "$target"
+    else
+        # Delete all items
+        tail -n +2 "$METADATA_FILE" | while IFS=',' read -r id name path date size type perms owner; do
+            _delete_item "$id"
+        done
+    fi
+
+    # Mostrar resumo
+    echo -e "${GREEN}Deleted items: $deleted_count${NC}"
+    echo -e "${GREEN}Total freed size: $deleted_size bytes${NC}"
 }
+
+
+: <<'EOF'
 #################################################
 # Function: search_recycled
 # Description: Searches for files in recycle bin
