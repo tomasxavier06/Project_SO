@@ -361,11 +361,11 @@ empty_recyclebin() {
         [[ ! "$confirm" =~ ^[Yy]$ ]] && echo "Operation canceled." && return 1
     fi
 
-    # Delete specific item
+    # Apagar item específico
     if [ -n "$target" ]; then
         _delete_item "$target"
     else
-        # Delete all items
+        # Apagar todos
         tail -n +2 "$METADATA_FILE" | while IFS=',' read -r id name path date size type perms owner; do
             _delete_item "$id"
         done
@@ -377,7 +377,7 @@ empty_recyclebin() {
 }
 
 
-: <<'EOF'
+
 #################################################
 # Function: search_recycled
 # Description: Searches for files in recycle bin
@@ -387,10 +387,61 @@ empty_recyclebin() {
 search_recycled() {
 # TODO: Implement this function
 local pattern="$1"
-# Your code here
-# Hint: Use grep to search metadata
+local case_insensitive=false
+
+    # Verificação de parâmetros
+    if [ -z "$pattern" ]; then
+        echo -e "${RED}Error: No search pattern provided${NC}"
+        echo "Usage: ./recycle_bin.sh search <pattern> [--ignore-case]"
+        return 1
+    fi
+
+    # Verificar se o segundo parâmetro é --ignore-case
+    if [ "$2" == "--ignore-case" ]; then
+        case_insensitive=true
+    fi
+
+    # Verificar se há itens na lixeira
+    if [ ! -s "$METADATA_FILE" ]; then
+        echo -e "${YELLOW}Recycle bin is empty.${NC}"
+        return 0
+    fi
+
+    # Converter wildcard em expressão regular (para grep)
+    local regex_pattern="${pattern//\*/.*}"
+
+    # Escolher comando grep conforme opção case-insensitive
+    local grep_cmd="grep -E"
+    if [ "$case_insensitive" = true ]; then
+        grep_cmd="grep -Ei"
+    fi
+
+    # Pular o cabeçalho e procurar correspondências
+    local matches
+    matches=$(tail -n +2 "$METADATA_FILE" | $grep_cmd "$regex_pattern")
+
+    if [ -z "$matches" ]; then
+        echo -e "${YELLOW}No files found matching pattern '${pattern}'.${NC}"
+        return 1
+    fi
+
+    # Cabeçalho bonito
+    printf "%-15s %-25s %-50s %-20s\n" "ID" "Original Name" "Original Path" "Deletion Date"
+    printf "%-15s %-25s %-50s %-20s\n" "---------------" "-------------------------" "--------------------------------------------------" "--------------------"
+
+    # Exibir resultados
+    while IFS=',' read -r id name path date size type perms owner; do
+        printf "%-15s %-25s %-50s %-20s\n" "$id" "$name" "$path" "$date"
+    done <<< "$matches"
+
+    local count
+    count=$(echo "$matches" | wc -l)
+    echo
+    echo -e "${GREEN}Total matches:${NC} $count"
+
 return 0
 }
+
 #################################################
 # Function: display_help
 # Description: Shows usage information
@@ -400,24 +451,54 @@ return 0
 display_help() {
 cat << EOF
 Linux Recycle Bin - Usage Guide
+
 SYNOPSIS:
-$0 [OPTION] [ARGUMENTS]
+  $0 [OPTION] [ARGUMENTS]
+
 OPTIONS:
-delete <file> Move file/directory to recycle bin
-list List all items in recycle bin
-restore <id> Restore file by ID
-search <pattern> Search for files by name
-empty Empty recycle bin permanently
-help Display this help message
+  delete <file>        Move file or directory to recycle bin
+  list [--detailed]    List all items in recycle bin
+  restore <id>         Restore file by ID
+  search <pattern>     Search for files by name or original path
+  empty [id|--force]   Permanently delete items (single or all)
+  help                 Display this help message
+
+ADDITIONAL FLAGS:
+  --detailed           Show extended information when listing files
+  --ignore-case        Perform case-insensitive searches
+  --force              Skip confirmation prompts when emptying bin
+
 EXAMPLES:
-$0 delete myfile.txt
-$0 list
-$0 restore 1696234567_abc123
-$0 search "*.pdf"
-$0 empty
+  $0 delete myfile.txt
+  $0 list
+  $0 list --detailed
+  $0 restore 1696234567_abc123
+  $0 search "*.pdf"
+  $0 search "report" --ignore-case
+  $0 empty
+  $0 empty --force
+  $0 help
+  $0 --help
+  $0 -h
+
+CONFIGURATION FILES:
+  Recycle Bin Directory : $RECYCLE_BIN_DIR
+  Metadata Database      : $METADATA_FILE
+  Log File               : $LOG_FILE
+  Config File            : $CONFIG_FILE
+
+NOTES:
+  • Files moved to the recycle bin can be restored anytime before
+    being permanently deleted.
+  • Use '--force' carefully when emptying the bin — this action
+    cannot be undone!
+
 EOF
 return 0
 }
+
+
+
 #################################################
 # Function: main
 # Description: Main program logic
@@ -425,36 +506,60 @@ return 0
 # Returns: Exit code
 #################################################
 main() {
-# Initialize recycle bin
-initialize_recyclebin
-# Parse command line arguments
-case "$1" in
-delete)
-shift
-delete_file "$@"
-;;
-list)
-list_recycled
-;;
-restore)
-restore_file "$2"
-;;
-search)
-search_recycled "$2"
-;;
-empty)
-empty_recyclebin
-;;
-help|--help|-h)
-display_help
-;;
-*)
-echo "Invalid option. Use 'help' for usage information."
-exit 1
-;;
-esac
+    # Initialize recycle bin
+    initialize_recyclebin
+
+    # Exit se nenhum argumento for passado
+    if [ -z "$1" ]; then
+        echo "No command provided. Use 'help' for usage information."
+        exit 1
+    fi
+
+    # Parse command line arguments
+    case "$1" in
+        delete)
+            shift
+            if [ $# -eq 0 ]; then
+                echo -e "${RED}Error: No file specified for deletion.${NC}"
+                exit 1
+            fi
+            delete_file "$@"
+            ;;
+        list)
+            shift
+            list_recycled "$1"   # passa --detailed se houver
+            ;;
+        restore)
+            shift
+            if [ $# -eq 0 ]; then
+                echo -e "${RED}Error: No ID or filename specified for restore.${NC}"
+                exit 1
+            fi
+            restore_file "$@"
+            ;;
+        search)
+            shift
+            if [ $# -eq 0 ]; then
+                echo -e "${RED}Error: No pattern specified for search.${NC}"
+                exit 1
+            fi
+            search_recycled "$@"
+            ;;
+        empty)
+            shift
+            empty_recyclebin "$@"
+            ;;
+        help|--help|-h)
+            display_help
+            ;;
+        *)
+            echo -e "${RED}Invalid command: $1${NC}"
+            echo "Use '$0 help' for usage information."
+            exit 1
+            ;;
+    esac
 }
-# Execute main function with all arguments
+
 main "$@"
 
-EOF
+
