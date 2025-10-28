@@ -2,8 +2,8 @@
 
 #################################################
 # Linux Recycle Bin Simulation
-# Author: [Your Name]
-# Date: [Date]
+# Author: Tomás Nogueira de Meneses Xavier and Guilherme da Silva Gomes
+# Date: 2025-10-25
 # Description: Shell-based recycle bin system
 #################################################
 # Global Configuration
@@ -27,14 +27,16 @@ NC='\033[0m' # No Color
 #################################################
 initialize_recyclebin() {
 
-    mkdir -p "$FILES_DIR" || { echo -e "${RED}Error in creating directorys.${NC}"; return 1; }
+    mkdir -p "$FILES_DIR" || { echo -e "${RED}Error in creating directory.${NC}"; return 1; }
 
     if [ ! -f "$METADATA_FILE" ]; then
         echo "ID,ORIGINAL_NAME,ORIGINAL_PATH,DELETION_DATE,FILE_SIZE,FILE_TYPE,PERMISSIONS,OWNER" > "$METADATA_FILE"
     fi
 
     if [ ! -f "$CONFIG_FILE" ]; then
-        echo "MAX_SIZE_MB=1024" > "$CONFIG_FILE"
+        # Default configuration: 10 KB and 10 days
+        echo "MAX_SIZE_KB=10" > "$CONFIG_FILE"
+        echo "NUMBER_OF_DAYS=10" >> "$CONFIG_FILE"
     fi
 
     if [ ! -f "$LOG_FILE" ]; then
@@ -65,76 +67,72 @@ echo "${timestamp}_${random}"
 # Returns: 0 on success, 1 on failure
 #################################################
 delete_file() {
-# TODO: Implement this function
-local file_path="$1"
-# Validate input
-if [ -z "$file_path" ]; then
-echo -e "${RED}Error: No file specified${NC}"
-return 1
-fi
-# Check if file exists
-if [ ! -e "$file_path" ]; then
-echo -e "${RED}Error: File '$file_path' does not exist${NC}"
-return 1
-fi
-# Generate unique ID for this file
-local unique_id
-unique_id=$(generate_unique_id)
+    for file_path in "$@"; do
+        if [ -z "$file_path" ]; then
+            echo -e "${RED}Error: No file specified${NC}"
+            continue
+        fi
 
-# Get absolute path
-local abs_path
-abs_path=$(realpath "$file_path" 2>/dev/null)
+        if [ ! -L "$file_path" ] && [ ! -e "$file_path" ]; then
+            echo -e "${RED}Error: File '$file_path' does not exist${NC}"
+            continue
+        fi
 
-# Prevent deleting the recycle bin itself
-if [[ "$abs_path" == "$RECYCLE_BIN_DIR"* ]]; then
-    echo -e "${RED}Error: Cannot delete the recycle bin itself${NC}"
-    echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR Attempted to delete recycle bin: $file_path" >> "$LOG_FILE"
-    return 1
-fi
+        local unique_id
+        unique_id=$(generate_unique_id)
 
-# Check read/write permissions
-if [ ! -r "$file_path" ] || [ ! -w "$file_path" ]; then
-    echo -e "${RED}Error: No read/write permissions for '$file_path'${NC}"
-    echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR No permission: $file_path" >> "$LOG_FILE"
-    return 1
-fi
+        local abs_path
+        abs_path=$(realpath "$file_path" 2>/dev/null)
 
-# Destination path in recycle bin
-local destination="$FILES_DIR/$unique_id"
+        if [[ "$abs_path" == "$RECYCLE_BIN_DIR"* ]]; then
+            echo -e "${RED}Error: Cannot delete the recycle bin itself${NC}"
+            echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR Attempted to delete recycle bin: $file_path" >> "$LOG_FILE"
+            continue
+        fi
 
-# Collect metadata
-local filename
-filename=$(basename "$file_path")
-local timestamp
-timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-local filesize
-filesize=$(du -b "$file_path" 2>/dev/null | cut -f1)
-local filetype
-[ -d "$file_path" ] && filetype="directory" || filetype="file"
-local permissions
-permissions=$(stat -c "%a" "$file_path")
-local owner
-owner=$(stat -c "%U:%G" "$file_path")
+        if [ ! -r "$file_path" ] || [ ! -w "$(dirname "$file_path")" ]; then
+            echo -e "${RED}Error: No read/write permissions for '$file_path' or its directory.${NC}"
+            echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR No permission: $file_path" >> "$LOG_FILE"
+            continue
+        fi
 
-# Move file or directory to recycle bin
-mv "$file_path" "$destination" 2>/dev/null
-if [ $? -ne 0 ]; then
-    echo -e "${RED}Error: Failed to move '$file_path'${NC}"
-    echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR Failed to move $file_path" >> "$LOG_FILE"
-    return 1
-fi
+        local destination="$FILES_DIR/$unique_id"
 
-# Append metadata entry to metadata.db
-echo "$unique_id,$filename,$abs_path,$timestamp,$filesize,$filetype,$permissions,$owner" >> "$METADATA_FILE"
+        local filename
+        filename=$(basename "$file_path")
+        local timestamp
+        timestamp=$(date '+%Y-%m-%d %H:%M:%S')
 
-# Log operation
-echo "$(date '+%Y-%m-%d %H:%M:%S') INFO Deleted: $abs_path -> $destination" >> "$LOG_FILE"
+        local filesize filetype permissions owner
+        if [ -L "$file_path" ]; then
+            filetype="symlink"
+            filesize=$(stat -c "%s" "$file_path")
+            permissions=$(stat -c "%a" "$file_path")
+            owner=$(stat -c "%U:%G" "$file_path")
+        else
+            filesize=$(du -b "$file_path" 2>/dev/null | cut -f1)
+            [ -d "$file_path" ] && filetype="directory" || filetype="file"
+            permissions=$(stat -c "%a" "$file_path")
+            owner=$(stat -c "%U:%G" "$file_path")
+        fi
 
-# Feedback to user
-echo -e "${GREEN}Deleted '$filename' (ID: $unique_id)${NC}"
+        mv "$file_path" "$destination" 2>/dev/null
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}Error: Failed to move '$file_path'${NC}"
+            echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR Failed to move $file_path" >> "$LOG_FILE"
+            continue
+        fi
 
-echo "Delete function called with: $file_path"
-return 0
+        echo "$unique_id,$filename,$abs_path,$timestamp,$filesize,$filetype,$permissions,$owner" >> "$METADATA_FILE"
+
+        echo "$(date '+%Y-%m-%d %H:%M:%S') INFO Deleted: $abs_path -> $destination" >> "$LOG_FILE"
+
+        echo -e "${GREEN}Deleted '$filename' (ID: $unique_id)${NC}"
+
+    done
+
+    check_quota
+    return 0
 }
 
 
@@ -147,8 +145,8 @@ return 0
 list_recycled() {
 # TODO: Implement this function
 echo "=== Recycle Bin Contents ==="
-# Check if metadata file exists and is not empty
-if [ ! -s "$METADATA_FILE" ]; then
+# Check if there are items in the recycle bin
+if [ ! -d "$FILES_DIR" ] || [ -z "$(ls -A "$FILES_DIR")" ]; then
     echo -e "${YELLOW}Recycle bin is empty.${NC}"
     return 0
 fi
@@ -339,8 +337,15 @@ empty_recyclebin() {
         IFS=',' read -r id name path date size type perms owner <<< "$metadata_line"
         local file_path="$FILES_DIR/$id"
         if [ -e "$file_path" ]; then
-            rm -rf "$file_path" && ((deleted_count++)) && ((deleted_size+=size))
-            echo "$(date '+%Y-%m-%d %H:%M:%S') PERMANENT DELETE $id -> $file_path" >> "$LOG_FILE"
+            if rm -rf "$file_path"; then
+                deleted_count=$((deleted_count + 1))
+                size_num=$(printf '%s' "$size" | tr -dc '0-9')
+                if [ -z "$size_num" ]; then
+                    size_num=0
+                fi
+                deleted_size=$((deleted_size + size_num))
+                echo "$(date '+%Y-%m-%d %H:%M:%S') PERMANENT DELETE $id -> $file_path" >> "$LOG_FILE"
+            fi
         fi
         # Remove do metadata
         grep -v "^$id," "$METADATA_FILE" > "${METADATA_FILE}.tmp" && mv "${METADATA_FILE}.tmp" "$METADATA_FILE"
@@ -365,15 +370,15 @@ empty_recyclebin() {
     if [ -n "$target" ]; then
         _delete_item "$target"
     else
-        # Apagar todos
-        tail -n +2 "$METADATA_FILE" | while IFS=',' read -r id name path date size type perms owner; do
+        # Apagar todos --- usar process substitution para evitar subshell
+        while IFS=',' read -r id name path date size type perms owner; do
             _delete_item "$id"
-        done
+        done < <(tail -n +2 "$METADATA_FILE")
     fi
 
     # Mostrar resumo
-    echo -e "${GREEN}Deleted items: $deleted_count${NC}"
-    echo -e "${GREEN}Total freed size: $deleted_size bytes${NC}"
+        echo -e "${GREEN}Deleted items: $deleted_count${NC}"
+        echo -e "${GREEN}Total freed size: $deleted_size bytes${NC}"
 }
 
 
@@ -441,14 +446,246 @@ local case_insensitive=false
 
 return 0
 }
-
 #################################################
-# Function: display_help
-# Description: Shows usage information
-# Parameters: None
+# Function: config_quota & check_quota
+# Description: Implement size limits for the recycle bin, Auto-delete the oldest files when the quota is exceeded
+# Parameters: $1 = max size of the bin
 # Returns: 0
 #################################################
+config_quota(){
+    local max_size_kb="$1"
+
+    if ! [[ "$max_size_kb" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}Error: Please provide a valid number for the size of the bin.${NC}"
+        return 1
+    fi
+
+    local temp_config
+    temp_config=$(mktemp)
+    if [ -f "$CONFIG_FILE" ]; then
+        grep -v "^MAX_SIZE_KB=" "$CONFIG_FILE" > "$temp_config"
+    fi
+
+    echo "MAX_SIZE_KB=$max_size_kb" >> "$temp_config"
+
+    mv "$temp_config" "$CONFIG_FILE"
+
+    echo -e "${GREEN}Maximum space for the recycle bin set to ${max_size_kb}KB.${NC}"
+}
+
+check_quota() {
+local max_size_b=$((MAX_SIZE_KB * 1024))
+local size=$(du -sb "$FILES_DIR" | cut -f1)
+
+while [ "$size" -gt $((max_size_b)) ]; do
+    oldest_file=$(tail -n +2 "$METADATA_FILE" | sort -t, -k4 | head -n 1)
+    oldest_id=$(echo "$oldest_file"| cut -d, -f1)
+    oldest_name=$(echo "$oldest_file"| cut -d, -f2)
+    oldest_file_delete="$FILES_DIR/$oldest_id"
+    rm -rf "$oldest_file_delete"
+    echo -e "Deleted oldest file '$oldest_name' (ID: $oldest_id)"
+    local temp_file=$(mktemp)
+    grep -v "^$oldest_id," "$METADATA_FILE" > "$temp_file"
+    mv "$temp_file" "$METADATA_FILE"
+    
+    size=$(du -sb "$FILES_DIR" | cut -f1)
+    done
+}
+#################################################
+# Function: config_cleanup & auto_cleanup
+## Description: Automatically delete files older than N days
+## Parameters: $1 = number of days
+## Returns: 0
+##################################################
+config_cleanup() {
+    local number_of_days="$1"
+
+    if ! [[ "$number_of_days" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}Error: Please provide a valid number for the number of days.${NC}"
+        return 1
+    fi
+
+    local temp_config
+    temp_config=$(mktemp)
+    if [ -f "$CONFIG_FILE" ]; then
+        grep -v "^NUMBER_OF_DAYS=" "$CONFIG_FILE" > "$temp_config"
+    fi
+
+    echo "NUMBER_OF_DAYS=$number_of_days" >> "$temp_config"
+
+    mv "$temp_config" "$CONFIG_FILE"
+
+    echo -e "${GREEN}Maximum time for a file in the bin set to ${number_of_days} days.${NC}"
+}
+
+auto_cleanup(){
+    local temp_metadata
+    temp_metadata=$(mktemp)
+    local ids_to_delete=()
+    
+    tail -n +2 "$METADATA_FILE" | while IFS=',' read -r id name path deletion_date size type perms owner; do
+        current_ts=$(date +%s)
+        file_ts=$(date -d "$deletion_date" +%s)
+        file_id="$id"
+
+        diff_seconds=$((current_ts - file_ts))
+        diff_days=$((diff_seconds / 86400)) # 86400=24*60*60(segundos num dia)
+
+        if [ "$diff_days" -gt "$NUMBER_OF_DAYS" ]; then
+        ids_to_delete+=("$id")
+        fi
+    done
+    if [ "${#ids_to_delete[@]}" -eq 0 ]; then
+        return 0
+    fi
+    for id_to_remove in "${ids_to_delete[@]}"; do
+            rm -rf "$FILES_DIR/$id_to_remove"
+            local temp_file=$(mktemp)
+            grep -v "^$id_to_remove," "$METADATA_FILE" > "$temp_file"
+            mv "$temp_file" "$METADATA_FILE"
+        done
+}
+
+#
+##################################################
+## Function: preview_file
+## Description: Show a preview of a file in the recycle bin
+## Parameters: $1 - file ID
+## Returns: 0
+##################################################
+preview_file() {
+    local file_id="$1"
+    if [ -z "$file_id" ]; then
+        echo -e "${RED}Error: No ID or name specified for preview.${NC}"
+        return 1
+    fi
+
+    if [ ! -s "$METADATA_FILE" ]; then
+        echo -e "${YELLOW}Recycle bin is empty.${NC}"
+        return 1
+    fi
+
+    # Encontrar a linha de metadata correspondente (por ID ou por nome)
+    local metadata_line
+    metadata_line=$(grep -F "$file_id" "$METADATA_FILE" | head -n 1)
+
+    if [ -z "$metadata_line" ]; then
+        echo -e "${RED}Error: File ID or name not found in metadata${NC}"
+        return 1
+    fi
+
+    local id name path date size type perms owner
+    IFS=',' read -r id name path date size type perms owner <<< "$metadata_line"
+
+    local bin_path="$FILES_DIR/$id"
+    if [ ! -e "$bin_path" ]; then
+        echo -e "${RED}Error: File not found in recycle bin: $bin_path${NC}"
+        return 1
+    fi
+
+    echo "=== Preview: $name (ID: $id) ==="
+
+    if [ "$type" != "file" ]; then
+        # Diretório ou outro tipo: listar conteúdo
+        ls -la "$bin_path"
+        return 0
+    fi
+
+    # Tentar detetar tipo com 'file' (se disponível)
+    if command -v file >/dev/null 2>&1; then
+        mime=$(file -b --mime-type "$bin_path" 2>/dev/null || echo "application/octet-stream")
+        case "$mime" in
+            text/*|*/xml|*/json|*/csv)
+                head -n 10 "$bin_path"
+                ;;
+            *)
+                echo "(binary or unsupported mime-type: $mime)"
+                ls -la "$bin_path"
+                ;;
+        esac
+    else
+        # Fallback para sistemas sem 'file'
+        if grep -Iq . "$bin_path" 2>/dev/null; then
+            head -n 10 "$bin_path"
+        else
+            echo "(binary file - preview not available)"
+            ls -la "$bin_path"
+        fi
+    fi
+
+    return 0
+}
+
+
+##################################################
+## Function: show_statistics
+## Description: Show statistics about the recycle bin
+## Parameters: None
+## Returns: 0
+##################################################
+show_statistics() {
+    echo -e "${GREEN}--- Estatísticas da Lixeira ---${NC}"
+
+    if [ ! -s "$METADATA_FILE" ] || [ $(wc -l < "$METADATA_FILE") -le 1 ]; then
+        echo "Itens na lixeira: 0"
+        echo "Tamanho total: 0B"
+        return 0
+    fi
+
+    local total_size=0
+    local count=0
+
+    while IFS= read -r size; do
+        ((count++))
+        total_size=$((total_size + size))
+    done < <(tail -n +2 "$METADATA_FILE" | cut -d, -f5)
+
+    local total_hr
+    if [ "$total_size" -lt 1024 ]; then
+        total_hr="${total_size}B"
+    elif [ "$total_size" -lt 1048576 ]; then
+        total_hr="$(awk "BEGIN {printf \"%.1fKB\", $total_size/1024}")"
+    elif [ "$total_size" -lt 1073741824 ]; then
+        total_hr="$(awk "BEGIN {printf \"%.1fMB\", $total_size/1048576}")"
+    else
+        total_hr="$(awk "BEGIN {printf \"%.1fGB\", $total_size/1073741824}")"
+    fi
+
+    echo "Itens na lixeira: $count"
+    echo "Tamanho total: $total_hr"
+
+    return 0
+}
+
+
+load_config() {
+    # Defaults (used when config values are absent)
+    MAX_SIZE_KB=10
+    NUMBER_OF_DAYS=10
+
+    if [ -f "$CONFIG_FILE" ]; then
+        local size_line
+        size_line=$(grep "^MAX_SIZE_KB=" "$CONFIG_FILE") 
+        if [ -n "$size_line" ]; then
+            MAX_SIZE_KB=$(echo "$size_line" | cut -d'=' -f2) 
+        fi
+        local days_line
+        days_line=$(grep "^NUMBER_OF_DAYS=" "$CONFIG_FILE")
+        if [ -n "$days_line" ]; then
+            NUMBER_OF_DAYS=$(echo "$days_line" | cut -d'=' -f2)
+        fi
+    fi
+}
+## Function: display_help
+## Description: Shows usage information
+## Parameters: None
+## Returns: 0
+##################################################
 display_help() {
+    local size_config
+    size_config=$(grep "^MAX_SIZE_KB=" "$CONFIG_FILE")
+    local days_config
+    days_config=$(grep "^NUMBER_OF_DAYS=" "$CONFIG_FILE")
 cat << EOF
 Linux Recycle Bin - Usage Guide
 
@@ -462,6 +699,10 @@ OPTIONS:
   search <pattern>     Search for files by name or original path
   empty [id|--force]   Permanently delete items (single or all)
   help                 Display this help message
+  config_bin_time      Configures the max number of days for a file to stay in the bin
+  config_bin_size      Configures the max size for the recycle bin
+  show_statistics      Show statistics about the recycle bin
+  preview <id/name>    Shows the first ten lines of a file in the recycle bin
 
 ADDITIONAL FLAGS:
   --detailed           Show extended information when listing files
@@ -492,7 +733,8 @@ NOTES:
     being permanently deleted.
   • Use '--force' carefully when emptying the bin — this action
     cannot be undone!
-
+  • Maximum time for a file in the bin is currently set to: ${days_config#*=} days
+  • Maximum size for the bin is currently set to: ${size_config#*=}KB
 EOF
 return 0
 }
@@ -508,6 +750,7 @@ return 0
 main() {
     # Initialize recycle bin
     initialize_recyclebin
+    load_config
 
     # Exit se nenhum argumento for passado
     if [ -z "$1" ]; then
@@ -548,6 +791,22 @@ main() {
         empty)
             shift
             empty_recyclebin "$@"
+            ;;
+        config_bin_time)
+            shift
+            config_cleanup "$@" # Nova opção para configurar numero de dias 
+            ;;
+        config_bin_size)
+            shift
+            config_quota   "$@" # Nova opção para configurar tamanho do lixo
+            ;;
+        show_statistics)
+            shift
+            show_statistics
+            ;;
+        preview)
+            shift
+            preview_file "$@"  # Nova opção para preview de arquivos
             ;;
         help|--help|-h)
             display_help

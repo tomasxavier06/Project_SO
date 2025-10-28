@@ -70,6 +70,23 @@ $SCRIPT restore "$ID"
 assert_success "Restore file"
 [ -f "$TEST_DIR/restore_test.txt" ] && echo "✓ File restored"
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # Run all tests
 echo "========================================="
 echo " Recycle Bin Test Suite"
