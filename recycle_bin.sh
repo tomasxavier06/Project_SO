@@ -35,7 +35,7 @@ initialize_recyclebin() {
 
     if [ ! -f "$CONFIG_FILE" ]; then
         # Default configuration: 10 KB and 10 days
-        echo "MAX_SIZE_KB=10" > "$CONFIG_FILE"
+        echo "MAX_SIZE_MB=1000" > "$CONFIG_FILE"
         echo "NUMBER_OF_DAYS=10" >> "$CONFIG_FILE"
     fi
 
@@ -90,16 +90,36 @@ delete_file() {
             continue
         fi
 
-        if [ ! -r "$file_path" ] || [ ! -w "$(dirname "$file_path")" ]; then
-            echo -e "${RED}Error: No read/write permissions for '$file_path' or its directory.${NC}"
-            echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR No permission: $file_path" >> "$LOG_FILE"
-            continue
+        # For symlinks, only check write permission on parent directory
+        # For regular files/dirs, check read permission on the file itself
+        if [ -L "$file_path" ]; then
+            if [ ! -w "$(dirname "$file_path")" ]; then
+                echo -e "${RED}Error: No write permission on directory of '$file_path'.${NC}"
+                echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR No permission: $file_path" >> "$LOG_FILE"
+                continue
+            fi
+        else
+            if [ ! -r "$file_path" ] || [ ! -w "$(dirname "$file_path")" ]; then
+                echo -e "${RED}Error: No read/write permissions for '$file_path' or its directory.${NC}"
+                echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR No permission: $file_path" >> "$LOG_FILE"
+                continue
+            fi
         fi
 
         local destination="$FILES_DIR/$unique_id"
 
         local filename
         filename=$(basename "$file_path")
+        
+        # Truncate filename if it exceeds filesystem limit (255 bytes)
+        # We keep the full name in metadata, but use a safe name for the physical file
+        local safe_filename="$filename"
+        if [ ${#filename} -gt 255 ]; then
+            # Use the unique_id as the filename in FILES_DIR (already unique and safe)
+            safe_filename="${unique_id}"
+            echo -e "${YELLOW}Warning: filename too long (${#filename} bytes), storing with ID as name${NC}"
+        fi
+        
         local timestamp
         timestamp=$(date '+%Y-%m-%d %H:%M:%S')
 
@@ -268,8 +288,21 @@ restore_file() {
     fi
 
     local dest_path="$orig_path"
+    # If the original filename is too long for the filesystem, create a safe truncated name
+    local MAX_NAME_LEN=255
+    local orig_name
+    orig_name=$(basename "$orig_path")
+    if [ ${#orig_name} -gt $MAX_NAME_LEN ]; then
+        # Truncate and add a short id suffix to keep uniqueness
+        local prefix_len=200
+        local short_id_suffix
+        short_id_suffix="${id:0:6}"
+        local safe_name
+        safe_name="${orig_name:0:prefix_len}_$short_id_suffix"
+        dest_path="${dest_dir}/${safe_name}"
+        echo -e "${YELLOW}Warning: original filename is longer than $MAX_NAME_LEN bytes; it will be restored as '$safe_name'.${NC}"
+    fi
 
-    # Tratar conflito se arquivo já existir no destino
     if [ -e "$dest_path" ]; then
         echo -e "${YELLOW}File $dest_path already exists.${NC}"
         echo "Choose action: [O]verwrite / [R]ename / [C]ancel"
@@ -426,7 +459,7 @@ local case_insensitive=false
     matches=$(tail -n +2 "$METADATA_FILE" | $grep_cmd "$regex_pattern")
 
     if [ -z "$matches" ]; then
-        echo -e "${YELLOW}No files found matching pattern '${pattern}'.${NC}"
+        echo -e "${YELLOW}File not found matching pattern '${pattern}'.${NC}"
         return 1
     fi
 
@@ -453,9 +486,9 @@ return 0
 # Returns: 0
 #################################################
 config_quota(){
-    local max_size_kb="$1"
+    local MAX_SIZE_MB="$1"
 
-    if ! [[ "$max_size_kb" =~ ^[0-9]+$ ]]; then
+    if ! [[ "$MAX_SIZE_MB" =~ ^[0-9]+$ ]]; then
         echo -e "${RED}Error: Please provide a valid number for the size of the bin.${NC}"
         return 1
     fi
@@ -463,18 +496,18 @@ config_quota(){
     local temp_config
     temp_config=$(mktemp)
     if [ -f "$CONFIG_FILE" ]; then
-        grep -v "^MAX_SIZE_KB=" "$CONFIG_FILE" > "$temp_config"
+        grep -v "^MAX_SIZE_MB=" "$CONFIG_FILE" > "$temp_config"
     fi
 
-    echo "MAX_SIZE_KB=$max_size_kb" >> "$temp_config"
+    echo "MAX_SIZE_MB=$MAX_SIZE_MB" >> "$temp_config"
 
     mv "$temp_config" "$CONFIG_FILE"
 
-    echo -e "${GREEN}Maximum space for the recycle bin set to ${max_size_kb}KB.${NC}"
+    echo -e "${GREEN}Maximum space for the recycle bin set to ${MAX_SIZE_MB}KB.${NC}"
 }
 
 check_quota() {
-local max_size_b=$((MAX_SIZE_KB * 1024))
+local max_size_b=$((MAX_SIZE_MB * 1024 * 1024))
 local size=$(du -sb "$FILES_DIR" | cut -f1)
 
 while [ "$size" -gt $((max_size_b)) ]; do
@@ -660,14 +693,14 @@ show_statistics() {
 
 load_config() {
     # Defaults (used when config values are absent)
-    MAX_SIZE_KB=10
+    MAX_SIZE_MB=10
     NUMBER_OF_DAYS=10
 
     if [ -f "$CONFIG_FILE" ]; then
         local size_line
-        size_line=$(grep "^MAX_SIZE_KB=" "$CONFIG_FILE") 
+        size_line=$(grep "^MAX_SIZE_MB=" "$CONFIG_FILE") 
         if [ -n "$size_line" ]; then
-            MAX_SIZE_KB=$(echo "$size_line" | cut -d'=' -f2) 
+            MAX_SIZE_MB=$(echo "$size_line" | cut -d'=' -f2) 
         fi
         local days_line
         days_line=$(grep "^NUMBER_OF_DAYS=" "$CONFIG_FILE")
@@ -683,7 +716,7 @@ load_config() {
 ##################################################
 display_help() {
     local size_config
-    size_config=$(grep "^MAX_SIZE_KB=" "$CONFIG_FILE")
+    size_config=$(grep "^MAX_SIZE_MB=" "$CONFIG_FILE")
     local days_config
     days_config=$(grep "^NUMBER_OF_DAYS=" "$CONFIG_FILE")
 cat << EOF
@@ -734,7 +767,7 @@ NOTES:
   • Use '--force' carefully when emptying the bin — this action
     cannot be undone!
   • Maximum time for a file in the bin is currently set to: ${days_config#*=} days
-  • Maximum size for the bin is currently set to: ${size_config#*=}KB
+  • Maximum size for the bin is currently set to: ${size_config#*=}MB
 EOF
 return 0
 }
