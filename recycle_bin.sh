@@ -82,7 +82,7 @@ delete_file() {
         unique_id=$(generate_unique_id)
 
         local abs_path
-        abs_path=$(realpath "$file_path" 2>/dev/null)
+        abs_path=$(readlink -f "$file_path")
 
         if [[ "$abs_path" == "$RECYCLE_BIN_DIR"* ]]; then
             echo -e "${RED}Error: Cannot delete the recycle bin itself${NC}"
@@ -90,8 +90,6 @@ delete_file() {
             continue
         fi
 
-        # For symlinks, only check write permission on parent directory
-        # For regular files/dirs, check read permission on the file itself
         if [ -L "$file_path" ]; then
             if [ ! -w "$(dirname "$file_path")" ]; then
                 echo -e "${RED}Error: No write permission on directory of '$file_path'.${NC}"
@@ -111,11 +109,8 @@ delete_file() {
         local filename
         filename=$(basename "$file_path")
         
-        # Truncate filename if it exceeds filesystem limit (255 bytes)
-        # We keep the full name in metadata, but use a safe name for the physical file
         local safe_filename="$filename"
         if [ ${#filename} -gt 255 ]; then
-            # Use the unique_id as the filename in FILES_DIR (already unique and safe)
             safe_filename="${unique_id}"
             echo -e "${YELLOW}Warning: filename too long (${#filename} bytes), storing with ID as name${NC}"
         fi
@@ -726,7 +721,7 @@ SYNOPSIS:
   $0 [OPTION] [ARGUMENTS]
 
 OPTIONS:
-  delete <file>        Move file or directory to recycle bin
+  delete <"file">        Move file or directory to recycle bin
   list [--detailed]    List all items in recycle bin
   restore <id>         Restore file by ID
   search <pattern>     Search for files by name or original path
@@ -743,10 +738,11 @@ ADDITIONAL FLAGS:
   --force              Skip confirmation prompts when emptying bin
 
 EXAMPLES:
-  $0 delete myfile.txt
+  $0 delete "myfile.txt"
   $0 list
   $0 list --detailed
   $0 restore 1696234567_abc123
+  $0 restore "ficheiro.txt"
   $0 search "*.pdf"
   $0 search "report" --ignore-case
   $0 empty

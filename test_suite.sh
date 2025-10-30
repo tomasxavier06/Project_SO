@@ -181,24 +181,22 @@ test_delete_file_without_permissions() {
 }
 
 test_restore_to_filename_conflict() {
-echo "=== Test: Restore to Filename Conflict ==="
-setup
-echo "original content" > "$TEST_DIR/conflict.txt"
-$SCRIPT delete "$TEST_DIR/conflict.txt"
-ID=$($SCRIPT list | grep "conflict.txt" | awk '{print $1}')
-# Create a file with the same name to cause conflict
-echo "new content" > "$TEST_DIR/conflict.txt"
-$SCRIPT restore "$ID"
-OUTPUT=$($SCRIPT restore "$ID" 2>&1)
-# Check only the first message printed by the command for the conflict text
-first_line=$(printf '%s\n' "$OUTPUT" | head -n1)
-if echo "$first_line" | grep -q "already exists"; then
-    assert_success "Restore to filename conflict (first message)"
-else
-    echo "First line: $first_line"
-    echo "$OUTPUT"
-    assert_fail "Restore to filename conflict"
-fi
+    echo "=== Test: Restore to Filename Conflict (Overwrite) ==="
+    setup
+    echo "original content" > "$TEST_DIR/conflict.txt"
+    $SCRIPT delete "$TEST_DIR/conflict.txt" > /dev/null
+    ID=$(grep ",conflict.txt," ~/.recycle_bin/metadata.db | cut -d, -f1)
+    echo "new content" > "$TEST_DIR/conflict.txt"
+    OUTPUT=$(echo "o" | $SCRIPT restore "$ID" 2>&1)
+    FILE_CONTENT=$(cat "$TEST_DIR/conflict.txt")
+    if [[ "$FILE_CONTENT" == "original content" ]]; then
+        assert_success "File was correctly overwritten with original content"
+    else
+        echo "ERROR: File content was not overwritten correctly."
+        echo "Expected: 'original content', Found: '$FILE_CONTENT'"
+        echo "Script output was: $OUTPUT"
+        assert_fail "File overwrite failed"
+    fi
 }
 test_restore_with_nonexistent_id() {
     echo "=== Test: Restore with Nonexistent ID ==="
