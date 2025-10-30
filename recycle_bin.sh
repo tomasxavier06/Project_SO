@@ -67,14 +67,18 @@ echo "${timestamp}_${random}"
 # Returns: 0 on success, 1 on failure
 #################################################
 delete_file() {
+    local had_error=0 
+    
     for file_path in "$@"; do
         if [ -z "$file_path" ]; then
             echo -e "${RED}Error: No file specified${NC}"
+            had_error=1  
             continue
         fi
 
         if [ ! -L "$file_path" ] && [ ! -e "$file_path" ]; then
             echo -e "${RED}Error: File '$file_path' does not exist${NC}"
+            had_error=1  
             continue
         fi
 
@@ -82,11 +86,16 @@ delete_file() {
         unique_id=$(generate_unique_id)
 
         local abs_path
-        abs_path=$(readlink -f "$file_path")
+        if [ -L "$file_path" ]; then
+            abs_path=$(readlink -f "$file_path")
+        else
+            abs_path=$(realpath "$file_path" 2>/dev/null)
+        fi
 
         if [[ "$abs_path" == "$RECYCLE_BIN_DIR"* ]]; then
             echo -e "${RED}Error: Cannot delete the recycle bin itself${NC}"
             echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR Attempted to delete recycle bin: $file_path" >> "$LOG_FILE"
+            had_error=1   
             continue
         fi
 
@@ -94,12 +103,14 @@ delete_file() {
             if [ ! -w "$(dirname "$file_path")" ]; then
                 echo -e "${RED}Error: No write permission on directory of '$file_path'.${NC}"
                 echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR No permission: $file_path" >> "$LOG_FILE"
+                had_error=1   
                 continue
             fi
         else
             if [ ! -r "$file_path" ] || [ ! -w "$(dirname "$file_path")" ]; then
                 echo -e "${RED}Error: No read/write permissions for '$file_path' or its directory.${NC}"
                 echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR No permission: $file_path" >> "$LOG_FILE"
+                had_error=1   
                 continue
             fi
         fi
@@ -135,6 +146,7 @@ delete_file() {
         if [ $? -ne 0 ]; then
             echo -e "${RED}Error: Failed to move '$file_path'${NC}"
             echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR Failed to move $file_path" >> "$LOG_FILE"
+            had_error=1  
             continue
         fi
 
@@ -147,9 +159,9 @@ delete_file() {
     done
 
     check_quota
-    return 0
+    
+    return "$had_error"
 }
-
 
 #################################################
 # Function: list_recycled
@@ -502,21 +514,42 @@ config_quota(){
 }
 
 check_quota() {
-local max_size_b=$((MAX_SIZE_MB * 1024 * 1024))
-local size=$(du -sb "$FILES_DIR" | cut -f1)
+    local max_size_b=$((MAX_SIZE_MB * 1024 * 1024))
+    local current_size
+    current_size=$(du -sb "$FILES_DIR" | cut -f1)
 
-while [ "$size" -gt $((max_size_b)) ]; do
-    oldest_file=$(tail -n +2 "$METADATA_FILE" | sort -t, -k4 | head -n 1)
-    oldest_id=$(echo "$oldest_file"| cut -d, -f1)
-    oldest_name=$(echo "$oldest_file"| cut -d, -f2)
-    oldest_file_delete="$FILES_DIR/$oldest_id"
-    rm -rf "$oldest_file_delete"
-    echo -e "Deleted oldest file '$oldest_name' (ID: $oldest_id)"
-    local temp_file=$(mktemp)
-    grep -v "^$oldest_id," "$METADATA_FILE" > "$temp_file"
-    mv "$temp_file" "$METADATA_FILE"
-    
-    size=$(du -sb "$FILES_DIR" | cut -f1)
+    if [ "$current_size" -le "$max_size_b" ]; then
+        return 0
+    fi
+
+    echo -e "${YELLOW}Quota exceeded. Cleaning up oldest files...${NC}"
+
+    local ids_to_delete=()
+    while [ "$current_size" -gt "$max_size_b" ]; do
+        local oldest_line
+        oldest_line=$(tail -n +2 "$METADATA_FILE" | sort -t, -k4 | head -n 1)
+        
+        if [ -z "$oldest_line" ]; then
+            break # Não há mais nada para apagar
+        fi
+
+        local oldest_id
+        oldest_id=$(echo "$oldest_line" | cut -d, -f1)
+        local oldest_size
+        oldest_size=$(echo "$oldest_line" | cut -d, -f5)
+
+        ids_to_delete+=("$oldest_id")
+        current_size=$((current_size - oldest_size))
+
+        local temp_metadata
+        temp_metadata=$(mktemp)
+        grep -v "^$oldest_id," "$METADATA_FILE" > "$temp_metadata"
+        mv "$temp_metadata" "$METADATA_FILE"
+    done
+
+    for id in "${ids_to_delete[@]}"; do
+        echo "Permanently deleting file (quota): $id"
+        rm -rf "$FILES_DIR/$id"
     done
 }
 #################################################
@@ -547,33 +580,47 @@ config_cleanup() {
 }
 
 auto_cleanup(){
+    if [ ! -s "$METADATA_FILE" ] || [ $(wc -l < "$METADATA_FILE") -le 1 ]; then
+        return 0 # Ficheiro de metadados vazio ou só com cabeçalho
+    fi
+
     local temp_metadata
     temp_metadata=$(mktemp)
+    # Copia o cabeçalho para o novo ficheiro de metadados
+    head -n 1 "$METADATA_FILE" > "$temp_metadata"
+
+    local current_ts
+    current_ts=$(date +%s)
+    local cutoff_ts=$((current_ts - (NUMBER_OF_DAYS * 86400))) # 86400s = 1 dia
+
     local ids_to_delete=()
-    
-    tail -n +2 "$METADATA_FILE" | while IFS=',' read -r id name path deletion_date size type perms owner; do
-        current_ts=$(date +%s)
-        file_ts=$(date -d "$deletion_date" +%s)
-        file_id="$id"
 
-        diff_seconds=$((current_ts - file_ts))
-        diff_days=$((diff_seconds / 86400)) # 86400=24*60*60(segundos num dia)
-
-        if [ "$diff_days" -gt "$NUMBER_OF_DAYS" ]; then
-        ids_to_delete+=("$id")
+    tail -n +2 "$METADATA_FILE" | while IFS=',' read -r line; do
+        local deletion_date
+        deletion_date=$(echo "$line" | cut -d, -f4)
+        local file_ts
+        file_ts=$(date -d "$deletion_date" +%s 2>/dev/null || echo 0)
+        
+        if [ "$file_ts" -lt "$cutoff_ts" ]; then
+            local id_to_delete
+            id_to_delete=$(echo "$line" | cut -d, -f1)
+            ids_to_delete+=("$id_to_delete")
+        else
+            echo "$line" >> "$temp_metadata"
         fi
     done
-    if [ "${#ids_to_delete[@]}" -eq 0 ]; then
-        return 0
-    fi
-    for id_to_remove in "${ids_to_delete[@]}"; do
-            rm -rf "$FILES_DIR/$id_to_remove"
-            local temp_file=$(mktemp)
-            grep -v "^$id_to_remove," "$METADATA_FILE" > "$temp_file"
-            mv "$temp_file" "$METADATA_FILE"
-        done
-}
 
+    mv "$temp_metadata" "$METADATA_FILE"
+
+    if [ "${#ids_to_delete[@]}" -eq 0 ]; then
+        return 0 # Nada para apagar
+    fi
+
+    for id in "${ids_to_delete[@]}"; do
+        echo "Permanently deleting file (cleanup): $id"
+        rm -rf "$FILES_DIR/$id"
+    done
+}
 #
 ##################################################
 ## Function: preview_file

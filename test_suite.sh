@@ -260,15 +260,34 @@ $SCRIPT restore "$ID"
 assert_success "Handle large file deletion and restoration"
 }
 test_handle_symbolic_links(){
-    echo "=== Test: Handle Symbolic Links ==="
+    echo "=== Test: Handle Symbolic Links (Isolated) ==="
     setup
+    
+    check_quota() { :; } # O ':' é um comando "no-op" (não faz nada)
+    auto_cleanup() { :; }
+    export -f check_quota auto_cleanup # Exporta as funções mock para o subshell do script
+
     echo "original content" > "$TEST_DIR/original.txt"
-    ln -s "$TEST_DIR/original.txt" "$TEST_DIR/symlink.txt" 
-    $SCRIPT delete "$TEST_DIR/symlink.txt"
-    [ ! -f "$TEST_DIR/symlink.txt" ] 
-    ID=$($SCRIPT list | grep "symlink.txt" | awk '{print $1}')
-    $SCRIPT restore "$ID"
-    assert_success "Restore symbolic link"
+    ln -s "original.txt" "$TEST_DIR/symlink.txt"
+
+    $SCRIPT delete "$TEST_DIR/symlink.txt" > /dev/null
+    
+    ID=$(grep ",symlink.txt," ~/.recycle_bin/metadata.db | cut -d, -f1)
+    if [ -z "$ID" ]; then
+        assert_fail "Failed to find symlink in metadata after deletion"
+        unset -f check_quota auto_cleanup # Limpa as funções mock antes de sair
+        return
+    fi
+    
+    $SCRIPT restore "$ID" > /dev/null
+
+    unset -f check_quota auto_cleanup
+
+    if [ -L "$TEST_DIR/symlink.txt" ]; then
+        assert_success "Symbolic link was correctly restored as a link"
+    else
+        assert_fail "Restored item is not a symbolic link"
+    fi
 }
 test_handle_hidden_files() {
     echo "=== Test: Handle Hidden Files ==="
@@ -387,13 +406,24 @@ test_error_insufficient_disk_space() { # AI was used on this test
 
 test_error_permission_denied_on_delete() {
     echo "=== Test: Error - Permission Denied on Deletion ==="
-    setup
+    setup  
     mkdir -p "$TEST_DIR/read_only_dir"
     touch "$TEST_DIR/read_only_dir/file.txt"
-    chmod 555 "$TEST_DIR/read_only_dir" # Diretório read-only
+    chmod 555 "$TEST_DIR/read_only_dir"
     
-    $SCRIPT delete "$TEST_DIR/read_only_dir/file.txt" > /dev/null 2>&1
-    assert_fail "Script fails correctly when permission is denied on delete"
+    OUTPUT=$($SCRIPT delete "$TEST_DIR/read_only_dir/file.txt" 2>&1)
+    local exit_code=$?
+    if [ "$exit_code" -ne 0 ] && [ -f "$TEST_DIR/read_only_dir/file.txt" ]; then
+        assert_success "Script correctly failed and file was not deleted"
+    else
+        if [ "$exit_code" -eq 0 ]; then
+            echo "ERROR: Script succeeded (exit code 0) but was expected to fail."
+        fi
+        if [ ! -f "$TEST_DIR/read_only_dir/file.txt" ]; then
+            echo "ERROR: File was deleted despite lack of permissions."
+        fi
+        assert_fail "Script did not handle permission error correctly"
+    fi
     
     chmod 755 "$TEST_DIR/read_only_dir"
 }
@@ -406,6 +436,7 @@ test_error_concurrent_operations() {
     touch "$TEST_DIR/file_A.txt"
     touch "$TEST_DIR/file_B.txt"
 
+    # Executa deletes em paralelo
     $SCRIPT delete "$TEST_DIR/file_A.txt" > /dev/null 2>&1 &
     $SCRIPT delete "$TEST_DIR/file_B.txt" > /dev/null 2>&1 &
     wait
@@ -413,12 +444,11 @@ test_error_concurrent_operations() {
     PHYSICAL_FILES_COUNT=$(ls -1 ~/.recycle_bin/files | wc -l)
     METADATA_ENTRIES_COUNT=$(tail -n +2 ~/.recycle_bin/metadata.db | wc -l)
 
-    if [ "$PHYSICAL_FILES_COUNT" -ne 2 ] || [ "$METADATA_ENTRIES_COUNT" -ne 2 ]; then
-        echo "Inconsistency found: $PHYSICAL_FILES_COUNT physical files, $METADATA_ENTRIES_COUNT metadata entries."
-        assert_success "Successfully demonstrated race condition vulnerability"
+    if [ "$PHYSICAL_FILES_COUNT" -eq 2 ] && [ "$METADATA_ENTRIES_COUNT" -eq 2 ]; then
+        assert_success "System maintained consistency during concurrent operations"
     else
-        echo "Race condition not triggered this time (both operations succeeded)."
-        assert_fail "Failed to demonstrate race condition vulnerability on this run"
+        echo "Inconsistency detected: $PHYSICAL_FILES_COUNT physical files, $METADATA_ENTRIES_COUNT metadata entries."
+        assert_fail "Race condition vulnerability detected"
     fi
 }
 test_performance_delete_110_files() {
