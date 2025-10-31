@@ -123,9 +123,22 @@ To set the maximum time, use
 
 These settings are stored in the file $HOME/.recycle_bin/config and are read by the script on each run. The size limit is enforced by **check_quota()**, which deletes the oldest files when necessary, while the time limit is enforced by **auto_cleanup()**, which automatically removes files older than the specified number of days.
 ## Examples
-[Detailed usage examples with screenshots]
+![Screenshot of the test](screenshots/teste1.png)
+![Screenshot of the test](screenshots/teste2.png)
+![Screenshot of the test](screenshots/teste4.png)
+![Screenshot of the test](screenshots/teste5.png)
+![Screenshot of the test](screenshots/teste6.png)
+![Screenshot of the test](screenshots/teste7.png)
+![Screenshot of the test](screenshots/teste8.png)
+![Screenshot of the test](screenshots/teste9.png)
+![Screenshot of the test](screenshots/teste10.png)
+![Screenshot of the test](screenshots/teste11.png)
+![Screenshot of the test](screenshots/teste12.png)
+
 ## Known Issues
 No limitations found
 ## References
-Use of AI to grasp concepts.
+- **AI Tools:** Google Gemini (https://gemini.google.com) Github Copilot (https://github.com/copilot) - Used to grasp concepts, debug code, and improve implementation.
+- **Shell Scripting Learning:** Bash and Shell Guide (https://www.w3schools.com/bash/) - Comprehensive resource for bash scripting and best practices.
+
 
