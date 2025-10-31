@@ -170,7 +170,7 @@ test_delete_file_without_permissions() {
     OUTPUT=$($SCRIPT delete "$TEST_DIR/protected.txt" 2>&1)
     
     # A verificação de permissão no seu script é mais complexa, vamos verificar a mensagem correta
-    if echo "$OUTPUT" | grep -q "No read/write permissions"; then
+    if echo "$OUTPUT" | grep -q "No write permissions"; then
         assert_success "Delete file without permissions (message)"
     else
         echo "OUTPUT: $OUTPUT"

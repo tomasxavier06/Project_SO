@@ -107,8 +107,8 @@ delete_file() {
                 continue
             fi
         else
-            if [ ! -r "$file_path" ] || [ ! -w "$(dirname "$file_path")" ]; then
-                echo -e "${RED}Error: No read/write permissions for '$file_path' or its directory.${NC}"
+            if [ ! -w "$file_path" ] || [ ! -w "$(dirname "$file_path")" ]; then
+                echo -e "${RED}Error: No write permissions for '$file_path' or its directory.${NC}"
                 echo "$(date '+%Y-%m-%d %H:%M:%S') ERROR No permission: $file_path" >> "$LOG_FILE"
                 had_error=1   
                 continue
