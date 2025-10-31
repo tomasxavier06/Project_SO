@@ -84,16 +84,16 @@ Enables searching for items by name or pattern, supporting wildcards (*) and cas
 ### Permanent Deletion (Empty Bin):
 Permits users to permanently remove individual items or clear the entire recycle bin, with confirmation prompts or a --force flag to skip them.
 
-### Storage Quota Management:
+### Storage Quota Management (optional):
 Includes config_quota() and check_quota() functions to limit the maximum bin size and automatically delete the oldest files when the quota is exceeded.
 
-### Automatic Cleanup by Age:
+### Automatic Cleanup by Age (optional):
 Implements a time-based cleanup mechanism that removes files older than a configurable number of days (config_cleanup() and auto_cleanup()).
 
-### File Preview:
+### File Preview (optional):
 Allows previewing the first few lines of text files or listing directory contents before restoration or deletion.
 
-### Statistics Summary:
+### Statistics Summary (optional):
 Displays real-time statistics about the recycle bin, including total number of items and total storage usage in human-readable format.
 
 ### Configurable Parameters:
@@ -104,6 +104,7 @@ Maintains a detailed recyclebin.log file recording all actions (deletion, restor
 
 ### Built-in Help Menu:
 Offers a complete usage guide accessible with ./recycle_bin.sh help, describing all commands, flags, and examples.
+
 ## Configuration
 The Linux recycle bin script allows you to configure two main settings: the **maximum bin size** and the **maximum time files can stay in the bin.**
 
