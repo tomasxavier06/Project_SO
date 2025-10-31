@@ -751,6 +751,7 @@ load_config() {
         fi
     fi
 }
+##################################################
 ## Function: display_help
 ## Description: Shows usage information
 ## Parameters: None
